@@ -1,37 +1,116 @@
-# -*- mode: ruby -*-
-# vi: set ft=ruby :
+---
+- hosts: all
+  become: yes
 
-VAGRANTFILE_API_VERSION = "2"
-Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
-  # General Vagrant VM configuration
-  config.vm.box = "geerlingguy/ubuntu2004"
-  config.ssh.insert_key = false
-  config.vm.provider :virtualbox do |v|
-    v.memory = 512
-    v.linked_clone = true
-  end
+  pre_tasks:
+    - name: Update apt cache if needed
+      apt: "update_cache=yes cache_valid_time=14400"
 
-  # Backend server
-  config.vm.define "backend" do |backend|
-    backend.vm.hostname = "backend"
-    backend.vm.network :private_network, ip: "192.168.40.4"
-  end
+    # - debug: var=repo_stat
+    - name: Check for the git repository
+      stat: path=/opt/yolo
+      register: repo_stat
 
- # Frontend server
-  config.vm.define "client" do |app|
-    app.vm.hostname = "frontend"
-    app.vm.network :private_network, ip: "192.168.40.5"
-  end
+    - name: Fetch the fkmutua/yolo GitHub repository
+       git:
+        repo: https://github.com/fkmutua/yolo.git
+        dest: /opt/yolo
+      when: not repo_stat.stat.exists
 
-  # Mongodb server
-  config.vm.define "mongodb" do |mongodb|
-    mongodb.vm.hostname = "mongodb"
-    mongodb.vm.network :private_network, ip: "192.168.40.6"
-  end
+  tasks:
+    # Install nodejs and npm on the frontend host
+    - block:
+        - name: Install nodejs and npm on the frontend host
+          apt:
+            state: present
+            name:
+              - nodejs
+              - npm
+        - name: Check git repo folder exists.
+          stat: path=/opt/yolo/frontend
+          register: git_stat
+
+        - name: Copy the frontend directory to vagrant
+          command: mv /opt/yolo/frontend /home/vagrant
+          when: git_stat.stat.exists
+
+        - name: Install required modules in package.json
+          command: >
+            chdir=/home/vagrant/frontend
+            npm install
+        - name: Install PM2 to run our frontend app
+          command: >
+            chdir=/home/vagrant/frontend
+            npm install pm2 -g
+        - name: Spawn pm2 to become active
+          become: yes
+          become_user: vagrant
+          command: pm2 list
+
+        - name: Configure PM2 to start automatically on system bootup
+          command: pm2 startup
+
+        - name: Start the frontend app using PM2
+          become: yes
+          become_user: vagrant
+          command: >
+            chdir=/home/vagrant/frontend
+            pm2 start --name yolo_app npm -- start
+        - name: Save the list of process for automatic restart after a system reboot
+          command: pm2 save
+      when: inventory_hostname == "frontend"
+
+    # Install nodejs and npm on the backend host
+    - block:
+        - name: Install nodejs and npm on the backend host
+          apt:
+            state: present
+            name:
+              - nodejs
+              - npm
+
+        - name: Check git repo folder exists.
+          stat: path=/opt/yolo/backend
+          register: git_stat
+
+        - name: Copy the backend directory to vagrant home directory
+          command: mv /opt/yolo/backend /home/vagrant
+          when: git_stat.stat.exists
+
+        - name: Install required modules in package.json
+          command: >
+            chdir=/home/vagrant/backend
+            npm install
+        - name: Install PM2 (to run our app)
+          command: >
+            chdir=/home/vagrant/backend
+            npm install pm2 -g
+        - name: Configure PM2 to start automatically on system bootup
+          command: pm2 startup
+
+        - name: Configure PM2 to start automatically on system bootup
+          command: pm2 list
+
+        - name: Start the backend using PM2
+          command: pm2 start --name yolo_app npm -- start
+
+        - name: Save the list of process for automatic restart after a system reboot
+          command: pm2 save
+      when: inventory_hostname == "backend"
+   # Install mongo on the db host
+          - block:
+                  - name: Import public GPG key for the latest stable version of MongoDB
+                    apt_key: keyserver=hkp://keyserver.ubuntu.com:80 id=7F0CEB10 state=present
+
+                  - name: Add MongoDB repository
+                    apt_repository: repo='deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multivers' state=present
+
+                  - name: Update cache
+                    apt: "update_cache=yes"
+
+                  - name: Install MongoDB
+                    apt: pkg=mongodb-org state=latest update_cache=yes
+
+            when: inventory_hostname == "mongodb"
 
 
- # Ansible provisioning.
-  config.vm.provision "ansible" do |ansible|
-    ansible.playbook = "playbook.yaml"
-  end
-end
